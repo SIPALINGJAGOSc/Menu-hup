@@ -1,0 +1,165 @@
+local RS = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local CS = game:GetService("CollectionService")
+local UIS = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local remote = RS:WaitForChild("FarmRemoteEvent")
+local GRID = 4
+
+-- === PENGATURAN ===
+local cfg = {
+	master = false,
+	breakOn = true,
+	collectOn = true,
+	placeOn = false,
+	range = 4,     -- 1..6 (6 = REACH server)
+	delay = 0.25,  -- 0.1..1 (0.1 = COOLDOWN server)
+}
+
+-- === GUI ===
+local gui = Instance.new("ScreenGui")
+gui.Name = "AutoFarmGui"
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 100
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local BG, DARK = Color3.fromRGB(30, 30, 36), Color3.fromRGB(50, 50, 58)
+local ON, OFF = Color3.fromRGB(50, 180, 80), Color3.fromRGB(190, 60, 60)
+
+local function round(obj, r)
+	Instance.new("UICorner", obj).CornerRadius = UDim.new(0, r or 8)
+end
+
+local function newText(class, parent, size, pos, text, color)
+	local o = Instance.new(class)
+	o.Size, o.Position, o.Text = size, pos, text
+	o.BackgroundColor3 = color or DARK
+	o.TextColor3 = Color3.new(1, 1, 1)
+	o.Font = Enum.Font.GothamBold
+	o.TextSize = 14
+	o.BorderSizePixel = 0
+	o.Parent = parent
+	round(o)
+	return o
+end
+
+local panel = Instance.new("Frame")
+panel.Size = UDim2.new(0, 210, 0, 236)
+panel.Position = UDim2.new(1, -230, 0.5, -118)
+panel.BackgroundColor3 = BG
+panel.BorderSizePixel = 0
+panel.Parent = gui
+round(panel, 10)
+
+-- Bar judul (untuk geser) + tombol minimize
+local title = newText("TextLabel", panel, UDim2.new(1, -44, 0, 32), UDim2.new(0, 0, 0, 0), "  Auto Farm", BG)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextSize = 15
+
+local minBtn = newText("TextButton", panel, UDim2.new(0, 32, 0, 24), UDim2.new(1, -38, 0, 4), "-", DARK)
+
+local body = Instance.new("Frame")
+body.Size = UDim2.new(1, -16, 1, -40)
+body.Position = UDim2.new(0, 8, 0, 36)
+body.BackgroundTransparency = 1
+body.Parent = panel
+
+minBtn.MouseButton1Click:Connect(function()
+	body.Visible = not body.Visible
+	panel.Size = body.Visible and UDim2.new(0, 210, 0, 236) or UDim2.new(0, 210, 0, 32)
+	minBtn.Text = body.Visible and "-" or "+"
+end)
+
+-- Geser panel (mouse & sentuh)
+do
+	local dragging, startInput, startPos
+	title.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging, startInput, startPos = true, i.Position, panel.Position
+		end
+	end)
+	UIS.InputChanged:Connect(function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+			local d = i.Position - startInput
+			panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+		end
+	end)
+	UIS.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+end
+
+-- Saklar
+local function makeToggle(y, text, key)
+	local b = newText("TextButton", body, UDim2.new(1, 0, 0, 34), UDim2.new(0, 0, 0, y), "", OFF)
+	local function refresh()
+		b.Text = text .. ": " .. (cfg[key] and "ON" or "OFF")
+		b.BackgroundColor3 = cfg[key] and ON or OFF
+	end
+	b.MouseButton1Click:Connect(function() cfg[key] = not cfg[key]; refresh() end)
+	refresh()
+end
+
+makeToggle(0, "AUTO FARM", "master")
+makeToggle(40, "Pukul Blok", "breakOn")
+makeToggle(80, "Ambil Gem/Seed", "collectOn")
+makeToggle(120, "Pasang Blok", "placeOn")
+
+-- Pengatur nilai (+/-)
+local function makeStepper(y, name, key, minV, maxV, step, fmt)
+	local minus = newText("TextButton", body, UDim2.new(0, 38, 0, 34), UDim2.new(0, 0, 0, y), "-", DARK)
+	local lbl = newText("TextLabel", body, UDim2.new(1, -84, 0, 34), UDim2.new(0, 42, 0, y), "", BG)
+	local plus = newText("TextButton", body, UDim2.new(0, 38, 0, 34), UDim2.new(1, -38, 0, y), "+", DARK)
+	local function refresh() lbl.Text = name .. ": " .. string.format(fmt, cfg[key]) end
+	local function change(d)
+		cfg[key] = math.clamp(math.floor((cfg[key] + d) / step + 0.5) * step, minV, maxV)
+		refresh()
+	end
+	minus.MouseButton1Click:Connect(function() change(-step) end)
+	plus.MouseButton1Click:Connect(function() change(step) end)
+	refresh()
+end
+
+makeStepper(160, "Range", "range", 1, 6, 1, "%d")
+makeStepper(200, "Delay", "delay", 0.1, 1, 0.05, "%.2f")
+
+-- === LOOP UTAMA ===
+task.spawn(function()
+	while true do
+		task.wait(cfg.delay)
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		if not (cfg.master and root) then continue end
+
+		local cx, cy = math.round(root.Position.X / GRID), math.round(root.Position.Y / GRID)
+		local r = cfg.range
+		local size = Vector3.new((r * 2 + 1) * GRID, (r * 2 + 1) * GRID, 8)
+		local parts = workspace:GetPartBoundsInBox(CFrame.new(cx * GRID, cy * GRID, 0), size)
+
+		local drop, block, dd, bd = nil, nil, math.huge, math.huge
+		for _, p in ipairs(parts) do
+			local d = Vector2.new(p.Position.X - root.Position.X, p.Position.Y - root.Position.Y).Magnitude
+			if (p.Name == "Gem" or p.Name == "Seed") then
+				if d < dd then drop, dd = p, d end
+			elseif CS:HasTag(p, "BreakableBlock") and d < bd then
+				block, bd = p, d
+			end
+		end
+
+		if cfg.collectOn and drop then
+			remote:FireServer("Collect", {item = drop})
+		end
+		if cfg.breakOn and block then
+			remote:FireServer("Break", {
+				x = math.round(block.Position.X / GRID),
+				y = math.round(block.Position.Y / GRID),
+			})
+		end
+		if cfg.placeOn then
+			local dir = root.CFrame.LookVector.X >= 0 and 1 or -1
+			remote:FireServer("Place", {x = cx + dir, y = cy})
+		end
+	end
+end)
